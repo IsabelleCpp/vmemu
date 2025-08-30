@@ -210,15 +210,16 @@ void emu_t::int_callback(uc_engine* uc, std::uint32_t intno, emu_t* obj) {
   uc_err err;
   std::uintptr_t rip = 0ull;
   static thread_local zydis_decoded_instr_t instr;
+  static thread_local std::array<ZydisDecodedOperand, ZYDIS_MAX_OPERAND_COUNT> operands;
 
   if ((err = uc_reg_read(uc, UC_X86_REG_RIP, &rip))) {
     std::printf("> failed to read rip... reason = %d\n", err);
     return;
   }
 
-  if (!ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(vm::utils::g_decoder.get(),
+  if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(vm::utils::g_decoder.get(),
                                              reinterpret_cast<void*>(rip),
-                                             PAGE_4KB, &instr))) {
+                                             PAGE_4KB, &instr, operands.data()))) {
     std::printf("> failed to decode instruction at = 0x%p\n", rip);
     if ((err = uc_emu_stop(uc))) {
       std::printf("> failed to stop emulation, exiting... reason = %d\n", err);
@@ -241,9 +242,11 @@ bool emu_t::branch_pred_spec_exec(uc_engine* uc, uint64_t address,
                                   uint32_t size, emu_t* obj) {
   uc_err err;
   static thread_local zydis_decoded_instr_t instr;
-  if (!ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(vm::utils::g_decoder.get(),
+  static thread_local std::array<ZydisDecodedOperand, ZYDIS_MAX_OPERAND_COUNT> operands;
+
+  if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(vm::utils::g_decoder.get(),
                                              reinterpret_cast<void*>(address),
-                                             PAGE_4KB, &instr))) {
+                                             PAGE_4KB, &instr, operands.data()))) {
     std::printf("> failed to decode instruction at = 0x%p\n", address);
     if ((err = uc_emu_stop(uc))) {
       std::printf("> failed to stop emulation, exiting... reason = %d\n", err);
@@ -264,12 +267,12 @@ bool emu_t::branch_pred_spec_exec(uc_engine* uc, uint64_t address,
     uc_mem_read(uc, STACK_BASE, obj->cc_trace.m_stack, STACK_SIZE);
   }
 
-  obj->cc_trace.m_instrs.push_back({instr, ctx});
+  obj->cc_trace.m_instrs.push_back({instr, operands, ctx});
 
   // RET or JMP REG means the end of a vm handler...
   if (instr.mnemonic == ZYDIS_MNEMONIC_RET ||
       (instr.mnemonic == ZYDIS_MNEMONIC_JMP &&
-       instr.operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER)) {
+       operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER)) {
     // deobfuscate the instruction stream before profiling...
     // makes it easier for profiles to be correct...
     vm::instrs::deobfuscate(obj->cc_trace);
@@ -282,9 +285,9 @@ bool emu_t::branch_pred_spec_exec(uc_engine* uc, uint64_t address,
             const vm::instrs::emu_instr_t& instr) -> bool {
           const auto& i = instr.m_instr;
           return i.mnemonic == ZYDIS_MNEMONIC_MOV &&
-                 i.operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
-                 i.operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
-                 i.operands[1].mem.base == vip && i.operands[1].size == 32;
+                 instr.operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                 instr.operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                 instr.operands[1].mem.base == vip && instr.operands[1].size == 32;
         });
 
     if (rva_fetch != obj->cc_trace.m_instrs.rend())
@@ -321,9 +324,11 @@ bool emu_t::code_exec_callback(uc_engine* uc, uint64_t address, uint32_t size,
                                emu_t* obj) {
   uc_err err;
   static thread_local zydis_decoded_instr_t instr;
-  if (!ZYAN_SUCCESS(ZydisDecoderDecodeBuffer(vm::utils::g_decoder.get(),
+  static thread_local std::array<ZydisDecodedOperand, ZYDIS_MAX_OPERAND_COUNT> operands;
+
+  if (!ZYAN_SUCCESS(ZydisDecoderDecodeFull(vm::utils::g_decoder.get(),
                                              reinterpret_cast<void*>(address),
-                                             PAGE_4KB, &instr))) {
+                                             PAGE_4KB, &instr, operands.data()))) {
     std::printf("> failed to decode instruction at = 0x%p\n", address);
     if ((err = uc_emu_stop(uc))) {
       std::printf("> failed to stop emulation, exiting... reason = %d\n", err);
@@ -345,12 +350,12 @@ bool emu_t::code_exec_callback(uc_engine* uc, uint64_t address, uint32_t size,
     uc_mem_read(uc, STACK_BASE, obj->cc_trace.m_stack, STACK_SIZE);
   }
 
-  obj->cc_trace.m_instrs.push_back({instr, ctx});
+  obj->cc_trace.m_instrs.push_back({instr, operands, ctx});
 
   // RET or JMP REG means the end of a vm handler...
   if (instr.mnemonic == ZYDIS_MNEMONIC_RET ||
       (instr.mnemonic == ZYDIS_MNEMONIC_JMP &&
-       instr.operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER)) {
+       operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER)) {
     // deobfuscate the instruction stream before profiling...
     // makes it easier for profiles to be correct...
     vm::instrs::deobfuscate(obj->cc_trace);
@@ -363,9 +368,9 @@ bool emu_t::code_exec_callback(uc_engine* uc, uint64_t address, uint32_t size,
             const vm::instrs::emu_instr_t& instr) -> bool {
           const auto& i = instr.m_instr;
           return i.mnemonic == ZYDIS_MNEMONIC_MOV &&
-                 i.operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
-                 i.operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
-                 i.operands[1].mem.base == vip && i.operands[1].size == 32;
+                 instr.operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                 instr.operands[1].type == ZYDIS_OPERAND_TYPE_MEMORY &&
+                 instr.operands[1].mem.base == vip && instr.operands[1].size == 32;
         });
 
     if (rva_fetch != obj->cc_trace.m_instrs.rend())
@@ -380,8 +385,8 @@ bool emu_t::code_exec_callback(uc_engine* uc, uint64_t address, uint32_t size,
           [& vip =
                obj->cc_trace.m_vip](vm::instrs::emu_instr_t& instr) -> bool {
             const auto& i = instr.m_instr;
-            return i.operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
-                   i.operands[0].reg.value == vip;
+            return instr.operands[0].type == ZYDIS_OPERAND_TYPE_REGISTER &&
+                   instr.operands[0].reg.value == vip;
           });
 
       uc_context* backup;
